@@ -1,52 +1,99 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-echo "[*] Killing miner and related processes..."
-pkill -9 -f xmr_linux_ 2>/dev/null || true
-pkill -9 -f vncc 2>/dev/null || true
-pkill -9 -f tmate 2>/dev/null || true
-pkill -9 -f sosal123 2>/dev/null || true
-pkill -9 -f seized 2>/dev/null || true
-pkill -9 -f /tmp/nginx 2>/dev/null || true
-pkill -9 -f /tmp/sleeping 2>/dev/null || true
-pkill -9 -f start.bat 2>/dev/null || true
-pkill -9 -f 5.bat 2>/dev/null || true
-pkill -9 -f check.sh 2>/dev/null || true
-pkill -9 -f 'node index.js' 2>/dev/null || true
+echo "[*] Starting deep cleanup of persistent miner..."
 
-echo "[*] Removing known malware files..."
-rm -f /root/xmr_linux_*
-rm -f /tmp/xmr_linux_*
-rm -f /config/xmr_linux_*
-rm -f /config/check.sh
-rm -f /config/start
-rm -f /root/check.sh
-rm -f /usr/local/lib/sshdd.so
-rm -f /tmp/nginx
-rm -f /tmp/sleeping
-rm -f /start.bat
-rm -f /5.bat
-
-echo "[*] Disabling miner auto-restart scripts..."
-
-# Find and disable any scripts named check.sh, start.bat, 5.bat in common locations
-for script in /config/check.sh /config/start /root/check.sh /start.bat /5.bat; do
-    if [ -f "$script" ]; then
-        mv "$script" "$script.disabled.$(date +%s)" && echo "Disabled $script"
-    fi
+# 1. Kill all known malicious processes
+echo "[*] Killing all miner-related processes..."
+for p in $(pgrep -f -d ' ' 'xmr_linux_|check.sh|node index.js|vncc|tmate|sosal123|seized|/tmp/nginx|/tmp/sleeping|start.bat|5.bat'); do
+    echo "Killing PID $p"
+    kill -9 "$p" || true
 done
 
-echo "[*] Cleaning cron jobs for all users..."
+# 2. Find and disable s6 services related to miner
+echo "[*] Disabling s6 supervision services..."
+S6_PATHS=(
+  /etc/service
+  /service
+  /var/run/s6
+  /var/service
+)
 
+for path in "${S6_PATHS[@]}"; do
+  if [ -d "$path" ]; then
+    for svc in "$path"/*; do
+      if grep -qE 'xmr_linux_|node index.js|check.sh' "$svc"/run 2>/dev/null; then
+        echo "Disabling s6 service: $svc"
+        s6-svc -d "$svc" 2>/dev/null || true
+        mv "$svc" "${svc}.disabled.$(date +%s)" || true
+      fi
+    done
+  fi
+done
+
+# 3. Remove malware files
+echo "[*] Removing malicious files..."
+FILES_TO_REMOVE=(
+  /root/xmr_linux_*
+  /tmp/xmr_linux_*
+  /config/xmr_linux_*
+  /config/check.sh
+  /config/start
+  /root/check.sh
+  /usr/local/lib/sshdd.so
+  /tmp/nginx
+  /tmp/sleeping
+  /start.bat
+  /5.bat
+)
+for f in "${FILES_TO_REMOVE[@]}"; do
+  rm -f $f 2>/dev/null || true
+done
+
+# Also find anywhere else these files might hide
+find / -type f \( -name 'xmr_linux_*' -o -name 'check.sh' -o -name '*.bat' \) -exec rm -f {} \; 2>/dev/null || true
+
+# 4. Clean cron jobs for all users
+echo "[*] Cleaning user cronjobs..."
 for user in $(cut -f1 -d: /etc/passwd); do
-    crontab -u "$user" -l 2>/dev/null | grep -vE 'xmr_linux_|check.sh|node index.js|minio.daviduwu.ovh' | crontab -u "$user" -
+  crontab -u "$user" -l 2>/dev/null | grep -vE 'xmr_linux_|check.sh|node index.js|minio.daviduwu.ovh' | crontab -u "$user" -
 done
 
-echo "[*] Removing suspicious downloads from minio.daviduwu.ovh..."
+# Remove system-wide cron entries
+sed -i '/xmr_linux_\|check.sh\|node index.js/d' /etc/crontab /etc/cron.*/* 2>/dev/null || true
 
-find / -type f -name 'xmr_linux_*' -o -name 'check.sh' -o -name '*.bat' 2>/dev/null | while read -r file; do
-    grep -q 'minio.daviduwu.ovh' "$file" && rm -f "$file" && echo "Deleted $file"
+# 5. Check and clear startup scripts
+echo "[*] Removing miner from startup scripts..."
+STARTUP_FILES=(
+  /etc/rc.local
+  /etc/init.d/miner*
+  /etc/systemd/system/miner.service
+  /etc/systemd/system/xmr.service
+  ~/.bashrc
+  ~/.profile
+)
+
+for file in "${STARTUP_FILES[@]}"; do
+  if [ -f "$file" ]; then
+    sed -i '/xmr_linux_\|check.sh\|node index.js/d' "$file"
+    echo "Cleaned $file"
+  fi
 done
 
-echo "[*] Cleanup complete. Please reboot your system and monitor."
+# 6. Disable suspicious aliases or functions
+unalias -a || true
 
+echo "[*] Cleanup done. Please reboot your system."
+
+echo "[*] Monitoring for miner processes in next 60s..."
+for i in {1..12}; do
+  sleep 5
+  if pgrep -f 'xmr_linux_' >/dev/null || pgrep -f 'check.sh' >/dev/null || pgrep -f 'node index.js' >/dev/null; then
+    echo "[!] Miner process detected still running after cleanup attempt!"
+    echo "Run this script again or investigate deeper."
+    exit 1
+  fi
+done
+
+echo "[*] No miner processes detected. System clean!"
+exit 0
