@@ -1,69 +1,52 @@
 #!/bin/bash
+set -e
 
-echo "[*] Starting full crypto miner cleanup..."
+echo "[*] Killing miner and related processes..."
+pkill -9 -f xmr_linux_ 2>/dev/null || true
+pkill -9 -f vncc 2>/dev/null || true
+pkill -9 -f tmate 2>/dev/null || true
+pkill -9 -f sosal123 2>/dev/null || true
+pkill -9 -f seized 2>/dev/null || true
+pkill -9 -f /tmp/nginx 2>/dev/null || true
+pkill -9 -f /tmp/sleeping 2>/dev/null || true
+pkill -9 -f start.bat 2>/dev/null || true
+pkill -9 -f 5.bat 2>/dev/null || true
+pkill -9 -f check.sh 2>/dev/null || true
+pkill -9 -f 'node index.js' 2>/dev/null || true
 
-# 1. Kill known miner and Node.js launcher processes
-echo "[*] Killing miner and node processes..."
-pkill -9 -f 'node index.js' 2>/dev/null
-pkill -9 -f 'xmr_linux_amd6' 2>/dev/null
-pkill -9 -f 'xmrig' 2>/dev/null
+echo "[*] Removing known malware files..."
+rm -f /root/xmr_linux_*
+rm -f /tmp/xmr_linux_*
+rm -f /config/xmr_linux_*
+rm -f /config/check.sh
+rm -f /config/start
+rm -f /root/check.sh
+rm -f /usr/local/lib/sshdd.so
+rm -f /tmp/nginx
+rm -f /tmp/sleeping
+rm -f /start.bat
+rm -f /5.bat
 
-# 2. Remove miner binaries and directories
-echo "[*] Removing miner files..."
-rm -rf /root/xmr_linux_amd644
-rm -rf /tmp/xmrig
+echo "[*] Disabling miner auto-restart scripts..."
 
-# 3. Remove Node.js launcher scripts
-echo "[*] Searching and removing suspicious index.js scripts..."
-find / -type f -name "index.js" -exec grep -q 'xmr_linux_amd644\|xmrig' {} \; -exec rm -f {} \; 2>/dev/null
-
-# 4. Scan for .js files linked to miners
-echo "[*] Scanning for .js files that reference miner binaries..."
-find / -type f -name "*.js" 2>/dev/null | while read jsfile; do
-    if grep -q 'xmr_linux_amd644\|xmrig' "$jsfile"; then
-        echo "    [!] Removing suspicious script: $jsfile"
-        rm -f "$jsfile"
+# Find and disable any scripts named check.sh, start.bat, 5.bat in common locations
+for script in /config/check.sh /config/start /root/check.sh /start.bat /5.bat; do
+    if [ -f "$script" ]; then
+        mv "$script" "$script.disabled.$(date +%s)" && echo "Disabled $script"
     fi
 done
 
-# 5. Remove persistence from root's crontab
-echo "[*] Cleaning root crontab entries..."
-crontab -l 2>/dev/null | grep -vE 'xmr_linux_amd644|xmrig|node index.js' | crontab - 2>/dev/null
+echo "[*] Cleaning cron jobs for all users..."
 
-# 6. Clean root's shell startup files
-echo "[*] Cleaning root's bash/profile files..."
-for file in /root/.bashrc /root/.profile; do
-    if [ -f "$file" ]; then
-        sed -i '/xmr_linux_amd644/d' "$file"
-        sed -i '/node index.js/d' "$file"
-    fi
+for user in $(cut -f1 -d: /etc/passwd); do
+    crontab -u "$user" -l 2>/dev/null | grep -vE 'xmr_linux_|check.sh|node index.js|minio.daviduwu.ovh' | crontab -u "$user" -
 done
 
-# 7. Check and remove systemd services
-echo "[*] Searching systemd for malicious miner services..."
-grep -rlE 'node index.js|xmr_linux_amd644|xmrig' /etc/systemd/system 2>/dev/null | while read service_file; do
-    svc_name=$(basename "$service_file" | sed 's/.service$//')
-    echo "    [*] Disabling and removing service: $svc_name"
-    systemctl disable "$svc_name" 2>/dev/null
-    rm -f "$service_file"
+echo "[*] Removing suspicious downloads from minio.daviduwu.ovh..."
+
+find / -type f -name 'xmr_linux_*' -o -name 'check.sh' -o -name '*.bat' 2>/dev/null | while read -r file; do
+    grep -q 'minio.daviduwu.ovh' "$file" && rm -f "$file" && echo "Deleted $file"
 done
 
-# Reload systemd
-systemctl daemon-reexec
-systemctl daemon-reload
+echo "[*] Cleanup complete. Please reboot your system and monitor."
 
-# 8. Final status check
-echo "[*] Verifying cleanup..."
-if pgrep -f 'node index.js\|xmr_linux_amd6\|xmrig' > /dev/null; then
-    echo "[!] Warning: Some miner processes are still running!"
-else
-    echo "[+] Success: No miner processes found."
-fi
-
-if [ -f /root/xmr_linux_amd644 ] || [ -d /tmp/xmrig ]; then
-    echo "[!] Warning: Some miner files still exist!"
-else
-    echo "[+] Success: All miner files removed."
-fi
-
-echo "[*] Crypto miner cleanup completed."
